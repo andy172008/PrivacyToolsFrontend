@@ -11,57 +11,74 @@
 
 <script>
 import * as echarts from 'echarts';
+import { isStringLiteral } from 'typescript';
 // 导入 ECharts 库
 
 export default {
   name: 'ComparisonCharts',
   // 组件的名称，方便在其他地方引用
   props: {
-    labels: {
+    // 传入的 X 轴标签数据
+    title: {
+      type: String,
+      required: true
+    },
+    label1: {
       type: Array,
       required: true
     },
-    // 传入的 X 轴标签数据
+    label2: {
+      type: Array,
+      required: true
+    },
+    // 机制名称
+    mechanismName1: {
+      type: String,
+      required: true
+    },
+    mechanismName2: {
+      type: String,
+      required: false,
+      default: () => []
+    },
+    // 传入的真实频率数据
     realFrequency: {
       type: Array,
       required: true
     },
-    // 传入的真实频率数据
+    // 传入的估计频率数据 1
     estimatedFrequency1: {
       type: Array,
       required: true
     },
-    // 传入的估计频率数据 1
+    // 传入的估计频率数据 2
     estimatedFrequency2: {
       type: Array,
       required: false,
       default: () => []
     },
-    // 传入的估计频率数据 2
+    // 传入的 MSE 数据 1
     mse1: {
       type: Array,
       required: true
     },
-    // 传入的 MSE 数据 1
+    // 传入的 MSE 数据 2
     mse2: {
       type: Array,
       required: false,
       default: () => []
     }
-    // 传入的 MSE 数据 2
   },
   mounted() {
-    // 组件挂载后调用绘图方法
+    // 组件挂载后初始化图表
+    this.barChart = echarts.init(document.getElementById('bar-chart'));
+    this.lineChart = echarts.init(document.getElementById('line-chart'));
+    // 调用绘图方法
     this.renderBarChart();
-    // 渲染柱状图
     this.renderLineChart();
-    // 渲染折线图
   },
   methods: {
     renderBarChart() {
-      // 绘制柱状图的方法
-      const barChart = echarts.init(document.getElementById('bar-chart'));
-      // 初始化柱状图，绑定到 id 为 'bar-chart' 的 DOM 元素
       const barOption = {
         grid: {
           top: 100,  // 增加顶部留白
@@ -70,7 +87,7 @@ export default {
           right: '10%',
         },
         title: {
-          text: '实际数据与估计数据的对比',
+          text: this.title,
           left: 'center'
         },
         // 图表的标题和位置
@@ -79,15 +96,18 @@ export default {
         },
         // 提示框，显示详细数据
         legend: {
-          data: ['真实频率', '估计频率 1', '估计频率 2'],
+          data: ['真实频率', this.mechanismName1, this.mechanismName2],
           top: '10%'
         },
         // 图例，显示各数据集的标识
         xAxis: {
           type: 'category',
-          data: this.labels
+          data: this.label1,
+          axisTick: {
+            show: false
+          }
         },
-        // X 轴，类别类型，数据来源于 props.labels
+        // X 轴，类别类型，数据来源于 props.label1
         yAxis: {
           type: 'value'
         },
@@ -100,26 +120,23 @@ export default {
           },
           // 真实频率的数据柱状图
           {
-            name: '估计频率 1',
+            name: this.mechanismName1,
             type: 'bar',
             data: this.estimatedFrequency1
           },
           // 估计频率 1 的数据柱状图
           ...(this.estimatedFrequency2.length > 0 ? [{
-            name: '估计频率 2',
+            name: this.mechanismName2,
             type: 'bar',
             data: this.estimatedFrequency2,
           }] : [])
           // 估计频率 2 的数据柱状图
         ]
       };
-      barChart.setOption(barOption);
+      this.barChart.setOption(barOption, true);
       // 设置柱状图的配置项
     },
     renderLineChart() {
-      // 绘制折线图的方法
-      const lineChart = echarts.init(document.getElementById('line-chart'));
-      // 初始化折线图，绑定到 id 为 'line-chart' 的 DOM 元素
       const lineOption = {
         grid: {
           top: 100,  // 增加顶部留白
@@ -137,36 +154,58 @@ export default {
         },
         // 提示框，显示详细数据
         legend: {
-          data: ['MSE 1', 'MSE 2'],
+          data: [this.mechanismName1, this.mechanismName2],
           top: '10%'
         },
         // 图例，显示各数据集的标识
         xAxis: {
           type: 'category',
-          data: this.labels
+          data: this.label2,
+          axisTick: {
+            show: false
+          }
         },
-        // X 轴，类别类型，数据来源于 props.labels
+        // X 轴，类别类型，数据来源于 props.label2
         yAxis: {
-          type: 'value'
+          type: 'log', // 将 Y 轴改为对数坐标轴
         },
         // Y 轴，数值类型
         series: [
           {
-            name: 'MSE 1',
+            name: this.mechanismName1,
             type: 'line',
             data: this.mse1
           },
           // MSE 1 的数据折线图
           ...(this.mse2.length > 0 ? [{
-            name: 'MSE 2',
+            name: this.mechanismName2,
             type: 'line',
             data: this.mse2,
           }] : [])
           // MSE 2 的数据折线图
         ]
       };
-      lineChart.setOption(lineOption);
+      this.lineChart.setOption(lineOption, true);
       // 设置折线图的配置项
+    },
+    updateChart() {
+      console.log('子组件中更新图表')
+      // 更新图表的逻辑，比如重新调用绘图函数
+      this.barChart.clear();
+      this.renderBarChart();
+      // 渲染柱状图
+      this.renderLineChart();
+      // 渲染折线图
+
+    },
+    beforeDestroy() {
+      // 在组件销毁前，销毁图表实例，防止内存泄漏
+      if (this.barChart) {
+        this.barChart.dispose();
+      }
+      if (this.lineChart) {
+        this.lineChart.dispose();
+      }
     }
   }
 };
