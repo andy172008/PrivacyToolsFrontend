@@ -6,8 +6,8 @@ import vueJsx from '@vitejs/plugin-vue-jsx'
 import langJsx from 'vite-plugin-lang-jsx'
 import path from 'path';
 import { createSvgIconsPlugin } from 'vite-plugin-svg-icons';
-// https://vitejs.dev/config/
 export default defineConfig({
+  base: '/privacyTools/', // 使用相对路径，因为nginx是部署在/privacyTools/下的
   plugins: [
     //vueJsx(),
     // langJsx(),
@@ -22,5 +22,9 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     },
     extensions: ['.js', '.vue', '.json']
-  }
+  },
+  server: {
+    host: '0.0.0.0', // 或者 '127.0.0.1'
+    port: 5175, // 默认端口
+  },
 })
