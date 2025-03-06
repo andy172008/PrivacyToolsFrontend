@@ -9,8 +9,6 @@ import { createSvgIconsPlugin } from 'vite-plugin-svg-icons';
 export default defineConfig({
   base: '/privacyTools/', // 使用相对路径，因为nginx是部署在/privacyTools/下的
   plugins: [
-    //vueJsx(),
-    // langJsx(),
     vue(),
     createSvgIconsPlugin({
       iconDirs: [path.resolve(process.cwd(), 'src/icons/svg')], // SVG 存放路径
