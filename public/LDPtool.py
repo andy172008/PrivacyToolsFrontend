@@ -7,10 +7,17 @@
 import copy
 import math
 import random
-import xxhash
-import numpy as np
-from random import choice
 from collections import Counter
+from random import choice
+
+import numpy as np
+import xxhash
+from scipy import stats
+from scipy.stats import gamma
+
+import scipy.special
+from numpy import linalg as LA
+
 
 
 class Data(object):
@@ -19,7 +26,7 @@ class Data(object):
         self.file_address = ''
         # 储存所有数据
         # 数据集文件中每行代表一个用户，如果一行只有一个数据，那么self.data的格式为[用户1,用户2,...,用户n]
-        # 如果一行有多个数据，那么self.data的格式为[[用户1数据1，用户1数据2，用户1数据3],[用户2数据1，用户2数据2，用户2数据3],...,[用户3数据1，用户3数据2，用户3数据3]]
+        # 如果一行有多个数据，那么self.data的格式为[[用户1的数据1，用户1的数据2，用户1的数据3],[用户2的数据1，用户2的数据2，用户2的数据3],...,[用户3的数据1，用户3的数据2，用户3的数据3]]
         self.data = []
         # 储存定义域
         self.domain = []
@@ -31,26 +38,37 @@ class Data(object):
         self.dataNum = 0
         # 记录数据类型
         self.data_type = data_type
+        # 记录用户每个集合中有多少个元素
+        self.set_size = 1
+
+        # 对于键值对，我们专门设计两个变量储存真实频率和真实
+        self.true_key_p = []
+        self.true_value_mean = []
 
         self.file_address = file_address
 
-        if data_type == 'categorical':
+        if data_type == 'categorical' or data_type == 'order' or data_type == 'sensitive':
             self.read_categorical_dataset()
-        elif data_type == 'numeric':
-            self.read_numeric_dataset()
+        elif data_type == 'numerical' or data_type == 'delta':
+            self.read_numerical_dataset()
         elif data_type == 'set':
             self.read_set_dataset()
+        elif data_type == 'key_value':
+            self.read_key_value_dataset()
+        elif data_type == 'location':
+            self.read_location_dataset()
         else:
             print('读取数据集时输入的数据类型参数不对')
 
-        if data_type == 'categorical' or data_type == 'set':
+        if data_type == 'categorical' or data_type == 'set' or data_type == 'order' or data_type == 'sensitive':
             self.data_statistics_p()
-        elif data_type == 'numeric':
+        elif data_type == 'numerical' or data_type == 'delta':
             self.data_statistics_mean()
+        elif data_type == 'key_value':
+            self.data_statistics_key_value()
+        # 位置数据就不用分析了，在类中自带分析
 
-        # 打印数据相关信息
-        # self.show_data_information()
-
+    # 读取类别型数据集，将其添加到self.data
     def read_categorical_dataset(self):
         with open(self.file_address, 'r') as f:
             for line in f.readlines():
@@ -58,13 +76,15 @@ class Data(object):
                 line = line.strip()
                 self.data.append(int(float(line)))
 
-    def read_numeric_dataset(self):
+    # 读取数值型数据集，将其添加到self.data
+    def read_numerical_dataset(self):
         with open(self.file_address, 'r') as f:
             for line in f.readlines():
                 # 移除头尾换行符
                 line = line.strip()
                 self.data.append(float(line))
 
+    # 读取集合型数据集，将其添加到self.data
     def read_set_dataset(self):
         with open(self.file_address, 'r') as f:
             for line in f.readlines():
@@ -74,11 +94,43 @@ class Data(object):
                 line_list = line.split(' ')
                 line_list = [int(float(x)) for x in line_list]
                 self.data.append(line_list)
+        # 记录每个集合中的元素数量
+        self.set_size = len(self.data[0])
 
-    # 对所有数据做一个简要的统计
+    def read_key_value_dataset(self):
+        with open(self.file_address, 'r') as f:
+            for line in f.readlines():
+                # 移除头尾换行符
+                line = line.strip()
+                # 将一行中的数字划分开
+                line_list = line.split(' ')
+                one_user_data = []
+                for i in range(len(line_list)):
+                    if i % 2 == 0:
+                        key = int(float(line_list[i]))
+                        value = float(line_list[i + 1])
+                        one_user_data.append([key, value])
+                self.data.append(one_user_data)
+        self.set_size = len(self.data[0])
+
+
+    def read_location_dataset(self):
+        with open(self.file_address, 'r') as f:
+            for line in f.readlines():
+                # 移除头尾换行符
+                line = line.strip()
+                # 将一行中的数字划分开
+                line_list = line.split(' ')
+                one_user_data = []
+                for x in line_list:
+                    one_user_data.append(float(x))
+                self.data.append(one_user_data)
+            self.dataNum = len(self.data)
+
+    # 对self，data中的数据统计真实频率
     def data_statistics_p(self):
         temp_data = []
-        if self.data_type == 'categorical':
+        if self.data_type == 'categorical' or self.data_type == 'order' or self.data_type == 'sensitive':
             temp_data = self.data
         elif self.data_type == 'set':
             for i in self.data:
@@ -91,13 +143,45 @@ class Data(object):
         self.domain.sort()
         self.dataNum = len(self.data)
         for x in self.domain:
-            self.true_p.append(count_dict.get(x, 0) / self.dataNum)
+            if self.data_type == 'categorical' or self.data_type == 'order' or self.data_type == 'sensitive':
+                self.true_p.append(count_dict.get(x, 0) / self.dataNum)
+            elif self.data_type == 'set':
+                self.true_p.append(count_dict.get(x, 0) / (self.dataNum * self.set_size))
 
+    # 对self.data中的数据统计真实均值
     def data_statistics_mean(self):
-        for x in self.data:
-            self.true_mean += x
+        for i in self.data:
+            self.true_mean += i
         self.dataNum = len(self.data)
         self.true_mean /= self.dataNum
+
+    # 对self.data中的键值对分别统计键的频率和值的均值
+    def data_statistics_key_value(self):
+        # 所有键的出现次数
+        key_count = {}
+        # 每一个键的值的和
+        key_sum = {}
+
+        for user_data in self.data:
+            for key, value in user_data:
+                if key not in key_count:
+                    key_count[key] = 0
+                    key_sum[key] = 0
+                key_count[key] += 1
+                key_sum[key] += value
+
+        # 求每个键对应值的均值
+        key_mean = {key: key_sum[key] / key_count[key] for key in key_count}
+        for key in key_count:
+            self.domain.append(key)
+        self.domain.sort()
+        self.dataNum = len(self.data)
+
+        total_count = sum(key_count.values())
+        for x in self.domain:
+            self.true_key_p.append(key_count.get(x, 0) / total_count)
+
+            self.true_value_mean.append(key_mean.get(x, 0))
 
     # 展示统计出的信息
     def show_data_information(self):
@@ -384,8 +468,8 @@ class OLH_USER(object):
 
     def encode(self, v: int):
         seed = random.randint(0, 100000)
-        hash = (xxhash.xxh32(str(v), seed=seed).intdigest() % self.g)
-        return seed, hash
+        hash_value = (xxhash.xxh32(str(v), seed=seed).intdigest() % self.g)
+        return seed, hash_value
 
     def perturb(self, x: int):
         new_domain = [i for i in range(self.g)]
@@ -617,6 +701,8 @@ class SS_SERVER(object):
         k = self.k
         e = math.exp(self.epsilon)
         self.d = int(round(k / (e + 1)))
+        if self.d < 1 :
+            self.d = 1
         # 所有用户的扰动数据
         self.per_datalist = per_datalist
         # 用户数量
@@ -787,20 +873,20 @@ class Wheel_USER(object):
         seed = random.randint(0, 100000)
 
         max_int_32 = (1 << 32) - 1
-        Y = [0 for col in range(N)]
+        Y = [0 for _ in range(N)]
         s = math.exp(epsilon)
         temp_p = 1 / (2 * c - 1 + c * s)
         omega = c * temp_p * s + (1 - c * temp_p)
         for i in range(N):
-            V = [0 for col in range(c)]
+            V = [0 for _ in range(c)]
             # hash
             for j in range(c):
                 V[j] = xxhash.xxh32_intdigest(str(X[i][j]), seed=seed) / max_int_32
             # 区间合并的准备工作
             # 详见论文算法3
             bSize = math.ceil(1 / temp_p)
-            lef = [0 for col in range(bSize)]
-            rig = [0 for col in range(bSize)]
+            lef = [0 for _ in range(bSize)]
+            rig = [0 for _ in range(bSize)]
             for b in range(bSize):
                 lef[b] = min((b + 1) * temp_p, 1.0)
                 rig[b] = b * temp_p
@@ -876,7 +962,7 @@ class Wheel_SERVER(object):
         max_int_32 = (1 << 32) - 1
         k = len(D)
         # Estimate_Dist = [0] * k
-        Estimate_Dist = [0 for col in range(k)]
+        Estimate_Dist = [0 for _ in range(k)]
         # Estimate_Dist = np.zeros(k, dtype=float)
         s = math.exp(epsilon)
         temp_p = 1 / (2 * c - 1 + c * s)
@@ -891,8 +977,2074 @@ class Wheel_SERVER(object):
         pt = temp_p * s / (c * temp_p * s + (1 - c * temp_p))
         pf = temp_p
         for i in range(k):
-            Estimate_Dist[i] = 1 / N * (Estimate_Dist[i] - N * pf) / (pt - pf)
+            # Estimate_Dist[i] = 1 / N * (Estimate_Dist[i] - N * pf) / (pt - pf)
+            # 上面的代码貌似少除以了了一个集合长度，因此我手动添加一个，应该是正确的
+            Estimate_Dist[i] = 1 / (N * c) * (Estimate_Dist[i] - N * pf) / (pt - pf)
         self.es_data = Estimate_Dist
 
     def get_es_data(self):
         return self.es_data
+
+
+# ------------------------下方为唐聪新加入代码，不一定正确
+class PrivSet_USER(object):
+    def __init__(self, epsilon: float, domain: list, data_list: list):
+        super(PrivSet_USER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 原始数据定义域
+        self.domain = domain
+        # 用户的原始数据
+        self.data_list = data_list
+        # 输入集合大小
+        self.m = len(data_list)
+        # 数据域大小
+        self.d = len(domain)
+        # 扰动数据
+        self.per_data = []
+
+    def get_per_data(self):
+        return self.per_data
+
+    def run(self):
+        P = self.perturb_probability()
+        perturbed_data = self.perturbation(P)
+        self.per_data = perturbed_data
+
+    # 计算扰动概率
+    def perturb_probability(self):
+        d = self.d
+        m = self.m
+        eps = self.epsilon
+        omega = math.comb(d - m, m) + (math.comb(d, m) - math.comb(d - m, m)) * pow(math.e, eps)
+        P = []
+        P.append(math.comb(d - m, m) / omega)
+        for i in range(1, m + 1):
+            prob = P[i - 1] + math.comb(m, i) * math.comb(d - m, m - i) * pow(math.e, eps) / omega
+            P.append(prob)
+        return P
+
+    # 确认随机数在数组中的位置
+    def find_position(self, P, r):
+        if not P:
+            return None  # 如果数组为空，返回None
+        if r < P[0]:
+            return 0  # 如果r小于数组的第一个元素，返回0
+        if r >= P[-1]:
+            return None  # 如果r大于等于数组的最后一个元素，无合适位置
+
+        low, high = 0, len(P) - 1
+        while low < high:
+            mid = (low + high) // 2
+            if P[mid] <= r:
+                low = mid + 1
+            else:
+                high = mid
+
+        # 此时low是第一个大于r的元素的索引，检查这个索引的前一个元素
+        if P[low] > r and P[low - 1] < r:
+            return low
+        return None
+
+    # 在任意一个集合中随机抽样函数
+    def random_subset(self, original_set, n):
+        if n > len(original_set):
+            raise ValueError("n is larger than the set size")
+        sampled_list = random.sample(list(original_set), n)  # 将集合转换为列表，并从中随机抽取n个元素
+        new_set = set(sampled_list)  # 将列表转换成集合
+        return new_set
+
+    # 扰动
+    def perturbation(self, P):
+        d = self.d
+        m = self.m
+        d_set = set(range(d))
+        set_2 = d_set - set(self.data_list)  # list相减是什么意思
+        # print(set_2)
+        random_number = np.random.rand()
+        # print(random_number)
+        c = self.find_position(P, random_number)
+        # print(c)
+        new_set_1 = self.random_subset(self.data_list, c)
+        # print(new_set_1)
+        new_set_2 = self.random_subset(set_2, m - c)
+        # print(new_set_2)
+        set_output = new_set_1 | new_set_2
+        return set_output
+
+
+class PrivSet_SERVER(object):
+    def __init__(self, epsilon: float, domain: list, per_datalist: list, m: int):
+        super(PrivSet_SERVER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 原始数据定义域
+        self.domain = domain
+        # 用户数量
+        self.n = len(per_datalist)
+        # 集合大小
+        self.m = m
+        # 数据域大小
+        self.d = len(domain)
+        # 频率估计结果
+        self.es_data = []
+
+        # 用户扰动数据集合
+        self.per_datalist = per_datalist
+
+    def estimate(self):
+        perturbed_data = self.per_datalist
+        n = self.n
+        eps = self.epsilon
+        d = self.d
+        m = self.m
+        threshold = d
+        pt, pf = self.perturb_probability()
+        estimated_counts = []
+        estimated_distribution = []
+        # 扰动数据的频数
+        perturb_counts = self.count_elements_below_threshold(perturbed_data, threshold)
+        # 真实数据频数的估计值
+        for counts in perturb_counts:
+            estimated_counts.append((counts - n * pf) / (pt - pf))
+        # 真实数据的估计频率
+        for counts in estimated_counts:
+            estimated_distribution.append(counts / n)
+        self.es_data = estimated_distribution
+
+    def get_es_data(self):
+        return self.es_data
+
+    # 计算扰动概率
+    def perturb_probability(self):
+        d = self.d
+        m = self.m
+        eps = self.epsilon
+        omega = math.comb(d - m, m) + (math.comb(d, m) - math.comb(d - m, m)) * pow(math.e, eps)
+        pt = (math.comb(d - 1, m - 1) * pow(math.e, eps)) / omega
+        pf = math.comb(d - m - 1, m - 1) / omega + (math.comb(d - 1, m - 1) - math.comb(d - m - 1, m - 1)) * pow(math.e,
+                                                                                                                 eps) / omega
+        P = []
+        P.append(math.comb(d - m, m) / omega)
+        for i in range(1, m + 1):
+            prob = P[i - 1] + math.comb(m, i) * math.comb(d - m, m - i) * pow(math.e, eps) / omega
+            P.append(prob)
+        return pt, pf
+
+    # 计数
+    def count_elements_below_threshold(self, arr, threshold):
+        # 生成一个新数组，其长度为threshold，每个位置初始化为0
+        counts = [0] * threshold
+        arr_new = []
+        for x in arr:
+            for y in x:
+                arr_new.append(y)
+        # 遍历数组中的每个元素
+        for num in arr_new:
+            # 如果元素小于阈值，则增加相应位置的计数
+            if num < threshold:
+                counts[num] += 1
+
+        return counts
+
+    # 分布正则化归一化
+    def project_probability_simplex(self, p_estimate):
+        k = len(p_estimate)  # Infer the size of the alphabet.
+        p_estimate_sorted = np.sort(p_estimate)
+        p_estimate_sorted[:] = p_estimate_sorted[::-1]
+        p_sorted_cumsum = np.cumsum(p_estimate_sorted)
+        i = 1
+        while i < k:
+            if p_estimate_sorted[i] + (1.0 / (i + 1)) * (1 - p_sorted_cumsum[i]) < 0:
+                break
+            i += 1
+        lmd = (1.0 / i) * (1 - p_sorted_cumsum[i - 1])
+        return np.maximum(p_estimate + lmd, 0)
+
+
+# 位置数据
+class PL_USER(object):
+    def __init__(self, epsilon: float, data: list):
+        super(PL_USER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 原始数据定义域
+        # self.domain = domain
+        # 用户的原始数据
+        self.data = data
+        # 数据维度
+        self.d = len(data)
+        # 扰动数据
+        self.per_data = []
+
+    def get_per_data(self):
+        return self.per_data
+
+    def run(self):
+        perturbed_data = self.Laplace_pertubation()
+        # 这里变成list，看看有什么问题
+        self.per_data = perturbed_data.tolist()
+
+    # 生成二维随机单位向量
+    def get_random_unit_vector(self):
+        # 从标准正态分布中抽取两个独立的样本
+        vector = np.random.randn(2)
+        # 规范化向量为单位长度
+        unit_vector = vector / np.linalg.norm(vector)
+        return unit_vector
+
+    # gamma随机数
+    def gamma_random_num(self):
+        d = self.d
+        eps = self.epsilon
+        scale = 1 / eps
+        l = gamma.rvs(a=d, scale=scale)
+
+        return l
+
+    # 生成二维拉普拉斯噪声
+    def Laplace_noise(self):
+        d = self.d
+        eps = self.epsilon
+        unit_vector = self.get_random_unit_vector()
+        l = self.gamma_random_num()
+        Laplace_noise = l * unit_vector
+
+        return Laplace_noise
+
+    # 实际数据加上噪声
+    def Laplace_pertubation(self):
+        d = self.d
+        eps = self.epsilon
+        v = self.data
+        noise = self.Laplace_noise()
+        new_vector = v + noise
+
+        return new_vector
+
+
+class PL_SERVER(object):
+    def __init__(self, epsilon: float, domain: list, per_datalist: list):
+        # 隐私预算
+        self.epsilon = epsilon
+        # 原始数据定义域
+        self.domain = domain
+        # 所有用户的扰动数据
+        self.per_datalist = per_datalist
+        # 用户数量
+        self.n = len(per_datalist)
+        # 频率估计结果
+        self.es_data = []
+        # 真实结果
+        self.true_frequency = []
+
+        # 固定参数
+        self.d = 50
+        # 可以调整最终有几个类别
+        self.r = 1 / 10
+
+    def estimate(self):
+        min_x, min_y, max_x, max_y = self.find_min_max_coordinates()
+        rectangle_points = [(min_x, min_y), (min_x, max_y), (max_x, max_y), (max_x, min_y)]
+        square_size, squares_centers, squares_nums, num_cols, num_rows = self.divide_rectangle_into_squares(
+            rectangle_points)
+        rectangles_coordinates = self.plot_divided_grid_with_complete_coverage(squares_centers, square_size)
+        new_proportion = self.count_points_in_rectangles(rectangles_coordinates)
+        self.true_frequency = self.count_points_in_real(rectangles_coordinates)
+        self.es_data = new_proportion
+
+    def get_es_data(self):
+        return self.es_data
+
+        # 确认输入域边界
+
+    def find_min_max_coordinates(self):
+        coordinates = self.domain
+        if not coordinates:
+            return None  # 如果列表为空，返回 None
+
+        # 初始化最小和最大坐标
+        min_x = min_y = float('inf')
+        max_x = max_y = float('-inf')
+
+        # 遍历每个坐标
+        for coord in coordinates:
+            x, y = coord
+            # 更新最小和最大值
+            if x < min_x:
+                min_x = x
+            if x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
+
+        return min_x, min_y, max_x, max_y
+
+    # 划分区域
+    # 长方形分成正方形
+    def divide_rectangle_into_squares(self, rectangle):
+        num_squares = self.d
+        # 计算矩形的宽度和高度
+        length = abs(rectangle[2][0] - rectangle[0][0])
+        width = abs(rectangle[1][1] - rectangle[0][1])
+
+        num_rows = math.ceil(math.sqrt(num_squares * width / length))
+        num_cols = math.ceil(math.sqrt(num_squares * length / width))
+
+        # print(num_cols, num_rows)
+
+        square_size = width / math.sqrt(num_squares * width / length)
+
+        # 生成正方形中心点坐标
+        squares_centers = []
+        for row in range(num_rows):
+            for col in range(num_cols):
+                center_x = rectangle[0][0] + (col + 0.5) * square_size
+                center_y = rectangle[0][1] + (row + 0.5) * square_size
+
+                squares_centers.append((center_x, center_y))
+
+        return square_size, squares_centers, len(squares_centers), num_cols, num_rows
+
+    def find_factors_closest_to_sqrt(self, n):
+        for i in range(int(n ** 0.5), 0, -1):
+            if n % i == 0:
+                return i, n // i
+        return 1, n
+
+    def plot_divided_grid_with_complete_coverage(self, grid_centers, grid_length):
+        n = int(1 / self.r)
+        # Calculate the bounding rectangle
+        x_coords = [x for x, _ in grid_centers]
+        y_coords = [y for _, y in grid_centers]
+        min_x, max_x = min(x_coords), max(x_coords)
+        min_y, max_y = min(y_coords), max(y_coords)
+        rect_width = max_x - min_x + grid_length
+        rect_height = max_y - min_y + grid_length
+
+        # Find the division factors closest to the square root of n
+        regions_across, regions_down = self.find_factors_closest_to_sqrt(n)
+        region_width = rect_width / regions_down
+        region_height = rect_height / regions_across
+
+        rectangles_coordinates = []
+        for i in range(regions_across):
+            for j in range(regions_down):
+                x1 = min_x + j * region_width - grid_length / 2
+                y1 = min_y + i * region_height - grid_length / 2
+                x2 = x1 + region_width
+                y2 = y1 + region_height
+                rectangles_coordinates.append(((x1, y1), (x2, y2)))
+
+        return rectangles_coordinates
+
+    # 计算大区域内点比例
+    def count_points_in_rectangles(self, rectangles):
+        points = self.per_datalist
+        # 初始化一个列表来存储每个矩形内点的数量
+        rectangle_counts = [0] * len(rectangles)
+
+        # 遍历所有点
+        for point in points:
+            # 遍历所有矩形
+            for i, (bottom_left, top_right) in enumerate(rectangles):
+                # 检查点是否在矩形内（包含边界）
+                if bottom_left[0] <= point[0] <= top_right[0] and bottom_left[1] <= point[1] <= top_right[1]:
+                    # 如果是，则增加该矩形中的点的计数
+                    rectangle_counts[i] += 1
+
+        # 计算所有矩形中点的总数
+        total_points = sum(rectangle_counts)
+
+        # 如果总数为零，则所有矩形的点的比例都是零
+        if total_points == 0:
+            return rectangle_counts
+
+        # 计算每个矩形中的点的比例
+        rectangle_proportions = [count / total_points for count in rectangle_counts]
+
+        return rectangle_proportions
+
+    # 计算真实频率
+    def count_points_in_real(self, rectangles):
+        points = self.domain
+        # 初始化一个列表来存储每个矩形内点的数量
+        rectangle_counts = [0] * len(rectangles)
+
+        # 遍历所有点
+        for point in points:
+            # 遍历所有矩形
+            for i, (bottom_left, top_right) in enumerate(rectangles):
+                # 检查点是否在矩形内（包含边界）
+                if bottom_left[0] <= point[0] <= top_right[0] and bottom_left[1] <= point[1] <= top_right[1]:
+                    # 如果是，则增加该矩形中的点的计数
+                    rectangle_counts[i] += 1
+
+        # 计算所有矩形中点的总数
+        total_points = sum(rectangle_counts)
+
+        # 如果总数为零，则所有矩形的点的比例都是零
+        if total_points == 0:
+            return rectangle_counts
+
+        # 计算每个矩形中的点的比例
+        rectangle_proportions = [count / total_points for count in rectangle_counts]
+
+        return rectangle_proportions
+
+
+class GBCUG_USER(object):
+    def __init__(self, epsilon: float, data: list):
+        # 隐私预算
+        self.epsilon = epsilon
+        # 原始数据定义域
+        # self.domain = domain
+        # 用户的原始数据
+        self.data = data
+        # 数据维度
+        self.d = len(data)
+        # 扰动数据
+        self.per_data = []
+
+    def get_per_data(self):
+        return self.per_data
+
+    def run(self):
+        perturbed_data = self.generate_points_with_density()
+        self.per_data = perturbed_data
+
+    # 圆内生成随机点
+    def generate_points_with_density(self):
+        epsilon = self.epsilon
+        coordinates = self.data
+        radius = np.random.gamma(2 + 1, 1 / epsilon, size=1)[0]
+        angle = random.uniform(0, 2 * math.pi)
+        r = radius * math.sqrt(random.uniform(0, 1))
+        x = coordinates[0] + r * math.cos(angle)
+        y = coordinates[1] + r * math.sin(angle)
+        return [x, y]
+
+
+class GBCUG_SERVER(object):
+    def __init__(self, epsilon: float, domain: list, per_datalist: list):
+        # 隐私预算
+        self.epsilon = epsilon
+        # 原始数据定义域
+        self.domain = domain
+        # 所有用户的扰动数据
+        self.per_datalist = per_datalist
+        # 用户数量
+        self.n = len(per_datalist)
+        # 频率估计结果
+        self.es_data = []
+        # 真实结果
+        self.true_frequency = []
+
+        # 固定参数
+        self.d = 50
+        self.r = 1 / 10
+
+    def estimate(self):
+        min_x, min_y, max_x, max_y = self.find_min_max_coordinates()
+        rectangle_points = [(min_x, min_y), (min_x, max_y), (max_x, max_y), (max_x, min_y)]
+        square_size, squares_centers, squares_nums, num_cols, num_rows = self.divide_rectangle_into_squares(
+            rectangle_points)
+        rectangles_coordinates = self.plot_divided_grid_with_complete_coverage(squares_centers, square_size)
+        new_proportion = self.count_points_in_rectangles(rectangles_coordinates)
+        self.true_frequency = self.count_points_in_real(rectangles_coordinates)
+        self.es_data = new_proportion
+
+    def get_es_data(self):
+        return self.es_data
+
+        # 确认输入域边界
+
+    def find_min_max_coordinates(self):
+        coordinates = self.domain
+        if not coordinates:
+            return None  # 如果列表为空，返回 None
+
+        # 初始化最小和最大坐标
+        min_x = min_y = float('inf')
+        max_x = max_y = float('-inf')
+
+        # 遍历每个坐标
+        for coord in coordinates:
+            x, y = coord
+            # 更新最小和最大值
+            if x < min_x:
+                min_x = x
+            if x > max_x:
+                max_x = x
+            if y < min_y:
+                min_y = y
+            if y > max_y:
+                max_y = y
+
+        return min_x, min_y, max_x, max_y
+
+    # 划分区域
+    # 长方形分成正方形
+    def divide_rectangle_into_squares(self, rectangle):
+        num_squares = self.d
+        # 计算矩形的宽度和高度
+        length = abs(rectangle[2][0] - rectangle[0][0])
+        width = abs(rectangle[1][1] - rectangle[0][1])
+
+        num_rows = math.ceil(math.sqrt(num_squares * width / length))
+        num_cols = math.ceil(math.sqrt(num_squares * length / width))
+
+        # print(num_cols, num_rows)
+
+        square_size = width / math.sqrt(num_squares * width / length)
+
+        # 生成正方形中心点坐标
+        squares_centers = []
+        for row in range(num_rows):
+            for col in range(num_cols):
+                center_x = rectangle[0][0] + (col + 0.5) * square_size
+                center_y = rectangle[0][1] + (row + 0.5) * square_size
+
+                squares_centers.append((center_x, center_y))
+
+        return square_size, squares_centers, len(squares_centers), num_cols, num_rows
+
+    def find_factors_closest_to_sqrt(self, n):
+        for i in range(int(n ** 0.5), 0, -1):
+            if n % i == 0:
+                return i, n // i
+        return 1, n
+
+    def plot_divided_grid_with_complete_coverage(self, grid_centers, grid_length):
+        n = int(1 / self.r)
+        # Calculate the bounding rectangle
+        x_coords = [x for x, _ in grid_centers]
+        y_coords = [y for _, y in grid_centers]
+        min_x, max_x = min(x_coords), max(x_coords)
+        min_y, max_y = min(y_coords), max(y_coords)
+        rect_width = max_x - min_x + grid_length
+        rect_height = max_y - min_y + grid_length
+
+        # Find the division factors closest to the square root of n
+        regions_across, regions_down = self.find_factors_closest_to_sqrt(n)
+        region_width = rect_width / regions_down
+        region_height = rect_height / regions_across
+
+        rectangles_coordinates = []
+        for i in range(regions_across):
+            for j in range(regions_down):
+                x1 = min_x + j * region_width - grid_length / 2
+                y1 = min_y + i * region_height - grid_length / 2
+                x2 = x1 + region_width
+                y2 = y1 + region_height
+                rectangles_coordinates.append([[x1, y1], [x2, y2]])
+
+        return rectangles_coordinates
+
+    # 计算大区域内点比例
+    def count_points_in_rectangles(self, rectangles):
+        points = self.per_datalist
+        # 初始化一个列表来存储每个矩形内点的数量
+        rectangle_counts = [0] * len(rectangles)
+
+        # 遍历所有点
+        for point in points:
+            # 遍历所有矩形
+            for i, (bottom_left, top_right) in enumerate(rectangles):
+                # 检查点是否在矩形内（包含边界）
+                if bottom_left[0] <= point[0] <= top_right[0] and bottom_left[1] <= point[1] <= top_right[1]:
+                    # 如果是，则增加该矩形中的点的计数
+                    rectangle_counts[i] += 1
+
+        # 计算所有矩形中点的总数
+        total_points = sum(rectangle_counts)
+
+        # 如果总数为零，则所有矩形的点的比例都是零
+        if total_points == 0:
+            return rectangle_counts
+
+        # 计算每个矩形中的点的比例
+        rectangle_proportions = [count / total_points for count in rectangle_counts]
+
+        return rectangle_proportions
+
+    # 计算真实频率
+    def count_points_in_real(self, rectangles):
+        points = self.domain
+        # 初始化一个列表来存储每个矩形内点的数量
+        rectangle_counts = [0] * len(rectangles)
+
+        # 遍历所有点
+        for point in points:
+            # 遍历所有矩形
+            for i, (bottom_left, top_right) in enumerate(rectangles):
+                # 检查点是否在矩形内（包含边界）
+                if bottom_left[0] <= point[0] <= top_right[0] and bottom_left[1] <= point[1] <= top_right[1]:
+                    # 如果是，则增加该矩形中的点的计数
+                    rectangle_counts[i] += 1
+
+        # 计算所有矩形中点的总数
+        total_points = sum(rectangle_counts)
+
+        # 如果总数为零，则所有矩形的点的比例都是零
+        if total_points == 0:
+            return rectangle_counts
+
+        # 计算每个矩形中的点的比例
+        rectangle_proportions = [count / total_points for count in rectangle_counts]
+
+        return rectangle_proportions
+
+
+# 有序数据
+class EM_USER(object):
+    # U/domain：数据域
+    # alpha：约等于隐私预算
+    # v： 单个用户的真实值
+    def __init__(self, epsilon, domain, x):
+        self.U = domain
+        self.alpha = self.convert(domain, epsilon)
+        self.v = x
+        # 扰动数据
+        self.per_data = []
+
+    def get_per_data(self):
+        return self.per_data
+
+    # 将epsilon转为alpha
+    def convert(self, U, epsilon):
+        alpha = 0
+        ldp_matrix = self.perturb_ldp(epsilon, U)
+        prior = [1 / len(U) for i in range(len(U))]  # 均匀分布
+        mpc_ldp = self.MPC(U, ldp_matrix, prior)
+        mpc_cldp = 0
+        while mpc_cldp <= mpc_ldp:
+            alpha += 0.01
+            cldp_matrix = self.perturb_cldp(alpha, U)
+            mpc_cldp = self.MPC(U, cldp_matrix, prior)
+        return alpha - 0.01
+
+    def MPC(self, U, matrix, prior):
+        mpc = 0
+        for j, y in enumerate(U):
+            max_pro = 0
+            sum = 0
+            for i, x in enumerate(U):
+                temp = matrix[i][j] * prior[i]
+                sum += temp
+                if temp > max_pro:
+                    max_pro = temp
+            if max_pro / sum > mpc:
+                mpc = max_pro / sum
+        return mpc
+
+    def perturb_cldp(self, alpha, U):
+        matrix = []
+        for x in U:
+            temp = []
+            score_sum = 0
+            for y in U:
+                score = math.pow(math.e, -1 * alpha * self.d(x, y, U) * 0.5)
+                score_sum = score_sum + score
+                temp.append(score)
+            temp = [i / score_sum for i in temp]
+            matrix.append(temp)
+        return matrix
+
+    def d(self, x, y, U):
+        X = list(U)
+        # return math.fabs(X.index(x) - X.index(y))
+        return math.fabs(x - y)
+
+    def perturb_ldp(self, epsilon, U):
+        matrix = []
+        k = len(U)
+        e_epsilon = math.pow(math.e, epsilon)
+        for x in range(len(U)):
+            temp = [1 / (e_epsilon + k - 1) for i in range(len(U))]
+            temp[x] = e_epsilon / (e_epsilon + k - 1)
+            matrix.append(temp)
+        return matrix
+
+    def run(self):
+        perturbed_data = self.perturb()
+        self.per_data = perturbed_data
+
+    def dis(self, x, y):
+        # return math.fabs(self.U.index(x) - self.U.index(y))
+        return math.fabs(x - y)
+
+    def perturb(self):
+        v = self.v
+        score_sum = 0
+        probabilities = [score_sum]
+        for z in self.U:
+            score = math.pow(math.e, -1 * self.alpha * self.dis(v, z) * 0.5)
+            score_sum = score_sum + score
+            probabilities.append(score_sum)
+        r = np.random.uniform(0, score_sum)
+        l = len(probabilities)
+        y = self.U[0]
+        for i in range(l):
+            if r >= probabilities[l - i - 1]:
+                y = self.U[l - i - 1]
+                break
+        return y
+
+
+class EM_SERVER(object):
+    # per_datalist: 单值集合
+    # U/domain：数据域
+    def __init__(self, epsilon, U, per_datalist):
+        self.U = U
+        self.alpha = self.convert(U, epsilon)
+        self.est = []
+        self.per_datalist = per_datalist
+        # 频率估计结果
+        self.es_data = []
+
+    def get_es_data(self):
+        return self.es_data
+
+    # 将epsilon转为alpha
+    def convert(self, U, epsilon):
+        alpha = 0
+        ldp_matrix = self.perturb_ldp(epsilon, U)
+        prior = [1 / len(U) for i in range(len(U))]  # 均匀分布
+        mpc_ldp = self.MPC(U, ldp_matrix, prior)
+        mpc_cldp = 0
+        while mpc_cldp <= mpc_ldp:
+            alpha += 0.01
+            cldp_matrix = self.perturb_cldp(alpha, U)
+            mpc_cldp = self.MPC(U, cldp_matrix, prior)
+        return alpha - 0.01
+
+    def MPC(self, U, matrix, prior):
+        mpc = 0
+        for j, y in enumerate(U):
+            max_pro = 0
+            sum = 0
+            for i, x in enumerate(U):
+                temp = matrix[i][j] * prior[i]
+                sum += temp
+                if temp > max_pro:
+                    max_pro = temp
+            if max_pro / sum > mpc:
+                mpc = max_pro / sum
+        return mpc
+
+    def perturb_cldp(self, alpha, U):
+        matrix = []
+        for x in U:
+            temp = []
+            score_sum = 0
+            for y in U:
+                score = math.pow(math.e, -1 * alpha * self.d(x, y, U) * 0.5)
+                score_sum = score_sum + score
+                temp.append(score)
+            temp = [i / score_sum for i in temp]
+            matrix.append(temp)
+        return matrix
+
+    def d(self, x, y, U):
+        X = list(U)
+        # return math.fabs(X.index(x) - X.index(y))
+        return math.fabs(x - y)
+
+    def perturb_ldp(self, epsilon, U):
+        matrix = []
+        k = len(U)
+        e_epsilon = math.pow(math.e, epsilon)
+        for x in range(len(U)):
+            temp = [1 / (e_epsilon + k - 1) for i in range(len(U))]
+            temp[x] = e_epsilon / (e_epsilon + k - 1)
+            matrix.append(temp)
+        return matrix
+
+    def estimate(self):
+        new_proportion = self.aggregate()
+
+        self.es_data = new_proportion
+
+    def dis(self, x, y):
+        # return math.fabs(self.U.index(x) - self.U.index(y))
+        return math.fabs(x - y)
+
+    def stochastic_matrix(self):
+        matrix = []
+        for x in self.U:
+            temp = []
+            score_sum = 0
+            for y in self.U:
+                score = math.pow(math.e, -1 * self.alpha * self.dis(x, y) * 0.5)
+                score_sum = score_sum + score
+                temp.append(score)
+            temp = [i / score_sum for i in temp]
+            matrix.append(temp)
+        return matrix
+
+    def aggregate(self):  # 聚合时，以观测值代替真实频数
+        obs = [0 for i in range(len(self.U))]
+        est = [0 for i in range(len(self.U))]
+        n = len(self.per_datalist)
+        matrix = self.stochastic_matrix()
+        for v in self.per_datalist:
+            obs[self.U.index(v)] += 1
+        for y in range(len(obs)):
+            t = 0
+            for x in range(len(obs)):
+                if x == y:
+                    continue
+                t += obs[x] * matrix[x][y]
+            est[y] = round((obs[y] - t) / matrix[y][y])
+            if est[y] < 0:
+                est[y] = 0
+        sum_value = 0
+        for i in est:
+            sum_value += i
+        est = [i / sum_value for i in est]
+        self.est = est
+        return est
+
+
+class GEM_USER(object):
+    # U 数据域
+    # d 扰动输出的集合大小
+    # alpha：约等于隐私预算
+    # v： 单个用户的真实值
+    def __init__(self, epsilon, U, v):
+        self.alpha = self.convert(U, epsilon)
+        self.U = U
+        self.v = v
+        self.k = len(U)
+        self.d = self.findOptd(self.alpha, self.k)
+        self.r = []
+        self.P = []
+        self.S = []  # 扰动输出结果, 大小为d的集合
+        # 扰动数据
+        self.per_data = []
+
+    def get_per_data(self):
+        return self.per_data
+
+    # 找到最优的d
+    def findOptd(self, alpha, k):
+        max = self.fun(alpha, k, 1)
+        opt_d = 1
+        for d in range(2, k):
+            cur = self.fun(alpha, k, d)
+            if cur > max:
+                max = cur
+                opt_d = d
+        return opt_d
+
+    def fun(self, alpha, k, d):
+        c = math.factorial(k) / (math.factorial(d) * math.factorial(k - d))
+        res = math.log(c, math.e) - (
+                alpha * (k - d) / 4 + 2 * math.log(c / 2) + 2 * math.log(1 + math.pow(math.e, -alpha * (k - d) / 4),
+                                                                         math.e)) \
+              / (1 + math.pow(math.e, alpha * (k - d) / 2))
+        return res
+
+    # 将epsilon转为alpha
+    def convert(self, U, epsilon):
+        alpha = 0
+        ldp_matrix = self.perturb_ldp(epsilon, U)
+        prior = [1 / len(U) for i in range(len(U))]  # 均匀分布
+        mpc_ldp = self.MPC(U, ldp_matrix, prior)
+        mpc_cldp = 0
+        while mpc_cldp <= mpc_ldp:
+            alpha += 0.01
+            cldp_matrix = self.perturb_cldp(alpha, U)
+            mpc_cldp = self.MPC(U, cldp_matrix, prior)
+        return alpha - 0.01
+
+    def MPC(self, U, matrix, prior):
+        mpc = 0
+        for j, y in enumerate(U):
+            max_pro = 0
+            sum = 0
+            for i, x in enumerate(U):
+                temp = matrix[i][j] * prior[i]
+                sum += temp
+                if temp > max_pro:
+                    max_pro = temp
+            if max_pro / sum > mpc:
+                mpc = max_pro / sum
+        return mpc
+
+    def perturb_cldp(self, alpha, U):
+        matrix = []
+        for x in U:
+            temp = []
+            score_sum = 0
+            for y in U:
+                score = math.pow(math.e, -1 * alpha * self.d(x, y, U) * 0.5)
+                score_sum = score_sum + score
+                temp.append(score)
+            temp = [i / score_sum for i in temp]
+            matrix.append(temp)
+        return matrix
+
+    def d(self, x, y, U):
+        X = list(U)
+        # return math.fabs(X.index(x) - X.index(y))
+        return math.fabs(x - y)
+
+    def perturb_ldp(self, epsilon, U):
+        matrix = []
+        k = len(U)
+        e_epsilon = math.pow(math.e, epsilon)
+        for x in range(len(U)):
+            temp = [1 / (e_epsilon + k - 1) for i in range(len(U))]
+            temp[x] = e_epsilon / (e_epsilon + k - 1)
+            matrix.append(temp)
+        return matrix
+
+    def run(self):
+        perturbed_data = self.perturb()
+        self.per_data = perturbed_data
+
+    def dis(self, x, y):
+        return math.fabs(x - y)
+
+    def select(self, i, d, temp_U):
+        if d == 0:
+            return self.S
+        p = self.r[i] * self.P[d - 1][i + 1] / self.P[d][i]
+        r = random.random()
+        if r < p:
+            self.S.append(temp_U[i])
+            self.select(i + 1, d - 1, temp_U)
+        else:
+            self.select(i + 1, d, temp_U)
+
+    def solveP(self):
+        for t in range(self.d + 1):
+            if t == 0:
+                temp = [1 for j in range(self.k + 1)]
+                self.P.append(temp)
+            else:
+                temp = [0 for j in range(self.k - t + 1)]
+                temp[self.k - t] = self.r[self.k - t] * self.P[t - 1][self.k - t + 1]
+                for i in range(self.k - t):
+                    temp[self.k - 1 - t - i] = temp[self.k - t - i] + self.r[self.k - 1 - t - i] * self.P[t - 1][
+                        self.k - t - i]
+                self.P.append(temp)
+
+    def perturb(self):
+        v = self.v
+        self.S = []
+        self.r = []
+        self.P = []
+        temp_U = copy.deepcopy(self.U)
+        temp_U = sorted(temp_U, key=lambda x: self.dis(x, v))  # 定义域按离真实值距离重排序
+        temp_U = list(temp_U)
+        for index, item in enumerate(temp_U):
+            self.r.append(math.pow(math.e, -self.alpha * self.dis(item, v) / (2 * self.d)))
+        self.solveP()
+        d = self.d
+        self.select(0, d, temp_U)
+        # print(len(self.S))
+        # print(self.S)
+        return self.S
+
+
+class GEM_SERVER(object):
+    def __init__(self, epsilon, U: list, per_datalist):
+        self.per_datalist = per_datalist
+        self.alpha = self.convert(U, epsilon)
+        self.U = U
+        self.k = len(U)
+        self.d = self.findOptd(self.alpha, self.k)
+        self.random_matrix = []
+        self.obs = []
+        self.total_perturb = []  # 所有子集的和
+        # 频率估计结果
+        self.es_data = []
+
+    def get_es_data(self):
+        return self.es_data
+
+    # 找到最优的d
+    def findOptd(self, alpha, k):
+        max = self.fun(alpha, k, 1)
+        opt_d = 1
+        for d in range(2, k):
+            cur = self.fun(alpha, k, d)
+            if cur > max:
+                max = cur
+                opt_d = d
+        return opt_d
+
+    def fun(self, alpha, k, d):
+        c = math.factorial(k) / (math.factorial(d) * math.factorial(k - d))
+        res = math.log(c, math.e) - (
+                alpha * (k - d) / 4 + 2 * math.log(c / 2) + 2 * math.log(1 + math.pow(math.e, -alpha * (k - d) / 4),
+                                                                         math.e)) \
+              / (1 + math.pow(math.e, alpha * (k - d) / 2))
+        return res
+
+    # 将epsilon转为alpha
+    def convert(self, U, epsilon):
+        alpha = 0
+        ldp_matrix = self.perturb_ldp(epsilon, U)
+        prior = [1 / len(U) for i in range(len(U))]  # 均匀分布
+        mpc_ldp = self.MPC(U, ldp_matrix, prior)
+        mpc_cldp = 0
+        while mpc_cldp <= mpc_ldp:
+            alpha += 0.01
+            cldp_matrix = self.perturb_cldp(alpha, U)
+            mpc_cldp = self.MPC(U, cldp_matrix, prior)
+        return alpha - 0.01
+
+    def MPC(self, U, matrix, prior):
+        mpc = 0
+        for j, y in enumerate(U):
+            max_pro = 0
+            sum = 0
+            for i, x in enumerate(U):
+                temp = matrix[i][j] * prior[i]
+                sum += temp
+                if temp > max_pro:
+                    max_pro = temp
+            if max_pro / sum > mpc:
+                mpc = max_pro / sum
+        return mpc
+
+    def perturb_cldp(self, alpha, U):
+        matrix = []
+        for x in U:
+            temp = []
+            score_sum = 0
+            for y in U:
+                score = math.pow(math.e, -1 * alpha * self.d(x, y, U) * 0.5)
+                score_sum = score_sum + score
+                temp.append(score)
+            temp = [i / score_sum for i in temp]
+            matrix.append(temp)
+        return matrix
+
+    def d(self, x, y, U):
+        X = list(U)
+        # return math.fabs(X.index(x) - X.index(y))
+        return math.fabs(x - y)
+
+    def perturb_ldp(self, epsilon, U):
+        matrix = []
+        k = len(U)
+        e_epsilon = math.pow(math.e, epsilon)
+        for x in range(len(U)):
+            temp = [1 / (e_epsilon + k - 1) for i in range(len(U))]
+            temp[x] = e_epsilon / (e_epsilon + k - 1)
+            matrix.append(temp)
+        return matrix
+
+    def estimate(self):
+        new_proportion = self.EM_lognew()
+
+        self.es_data = new_proportion
+
+    def dis(self, x, y):
+        return np.fabs(x - y)
+
+    def P_1m(self, r):
+        r = np.array(r)
+        temp = [1.0 for j in range(self.k)]
+        temp1 = np.array([temp for j in range(self.k)])
+        for t in range(1, self.d + 1):
+            temp0 = copy.deepcopy(temp1)
+            if t == 1:
+                temp1[:, (self.k - 1)] = np.array(r)[:, (self.k - 1)].T
+                for a in range(self.k - 1):
+                    temp1[:, self.k - 2 - a] = r[:, self.k - 2 - a] + temp1[:, self.k - 1 - a]
+            else:
+                temp1[:, self.k - t] = r[:, self.k - t] * temp0[:, self.k - t + 1]
+                for a in range(self.k - t):
+                    temp1[:, self.k - 1 - t - a] = temp1[:, self.k - t - a] + r[:, self.k - 1 - t - a] * \
+                                                   temp0[:, self.k - t - a]
+        return r[:, 0] * temp0[:, 1] / temp1[:, 0], temp1[:, 0]
+
+    def solve_r(self, x, v):
+        return np.power(math.e, -self.alpha * self.dis(x, v) / (2 * self.d))
+
+    def solve_R(self, U, v):
+        return self.solve_r(U, v)
+
+    def switchR(self, r):
+        temp_list = []
+        for i in range(len(r)):
+            tr = copy.deepcopy(r)
+            temp = tr[0]
+            tr[0] = tr[i]
+            tr[i] = temp
+            temp_list.append(tr)
+        return temp_list
+
+    def solveMatrix_np(self):
+        for i in range(self.k):
+            v = self.U[i]
+            r = self.solve_r(np.array(self.U), v)  # 长为k的向量
+            R = self.switchR(r)  # k*k的矩阵
+            temp_matrix, temp_perturb = self.P_1m(R)
+            self.random_matrix.append(temp_matrix)
+            self.total_perturb.append(temp_perturb[0])
+        # return random_matrix, total_perturb
+
+    def solveMatrix(self):
+        for i in range(self.k):  # 求真实值为i，扰动输出的子集包含j的概率
+            v = self.U[i]
+            temp_list = []
+            for j in range(self.k):
+                temp_U = copy.deepcopy(self.U)
+                if j != 0:  # j提到第一个
+                    temp = temp_U[0]
+                    temp_U[0] = temp_U[j]
+                    temp_U[j] = temp
+                r = []
+                for index, item in enumerate(temp_U):
+                    r.append(math.pow(math.e, -self.alpha * self.dis(item, v) / (2 * self.d)))
+                temp1 = [1 for j in range(self.k)]
+                for t in range(1, self.d + 1):
+                    temp0 = copy.deepcopy(temp1)
+                    if t == 1:
+                        temp1[self.k - 1] = r[self.k - 1]
+                        for a in range(self.k - 1):
+                            temp1[self.k - 2 - a] = r[self.k - 2 - a] + temp1[self.k - 1 - a]
+                    else:
+                        temp1[self.k - t] = r[self.k - t] * temp0[self.k - t + 1]
+                        for a in range(self.k - t):
+                            temp1[self.k - 1 - t - a] = temp1[self.k - t - a] + r[self.k - 1 - t - a] * \
+                                                        temp0[self.k - t - a]
+                temp_list.append(r[0] * temp0[1] / temp1[0])
+            self.total_perturb.append(temp1[0])
+            self.random_matrix.append(temp_list)
+
+    def count(self):
+        self.obs = [0 for i in range(self.k)]
+        for item in self.per_datalist:
+            for c in item:
+                self.obs[self.U.index(c)] += 1
+        # self.obs = [i/(len(self.per_datalist)*self.d) for i in self.obs]
+
+    # 一对一
+    def log_likelihood_new(self, est):
+        matrix_trans = np.array(self.random_matrix).T
+        ll = np.inner(self.obs, np.log(np.matmul(matrix_trans, est)))
+        return ll
+
+    # 似然函数观测值，输出中各项分布
+    def EM_lognew(self):
+        thre = 1e-4
+        self.random_matrix = []
+        self.obs = []
+        self.total_perturb = []  # 所有子集的和
+        self.count()
+        self.solveMatrix_np()
+        est = [i / (len(self.per_datalist) * self.d) for i in self.obs]
+        ll = self.log_likelihood_new(est)
+        delta = math.fabs(ll)
+        count = 0
+        while delta > thre:
+            self.random_matrix = np.array(self.random_matrix)
+            dom = np.matmul(self.random_matrix.T, est)
+            TMP = self.random_matrix / dom
+            p = np.copy(np.matmul(TMP, np.array(self.obs)))
+            p = p * est
+            est = np.copy(p / sum(p))
+            ll_new = self.log_likelihood_new(est)
+            delta = ll_new - ll
+            ll = ll_new
+            count += 1
+        return est.tolist()
+
+
+# 键值数据
+class PCKVGRR_USER(object):
+    # epsilon 隐私预算
+    # S 单条用户集合
+    # d key的大小
+    def __init__(self, epsilon, d, S):
+        self.epsilon = epsilon
+        self.S = S
+        self.l = 1
+        self.d = d
+        # 扰动数据
+        self.per_data = []
+
+    def run(self):
+        perturbed_data = self.perturb()
+        self.per_data = perturbed_data
+
+    def pad_sample(self):
+        n = len(self.S) / max([len(self.S), self.l])
+        bernoulliDist = stats.bernoulli(n)
+        B = bernoulliDist.rvs(1)
+        if B == 1:
+            a = random.choice(self.S)
+            kv = copy.copy(a)
+        else:
+            num = list(range(self.d + 1, self.d + self.l + 1))
+            kv = [random.choice(num), 0]
+
+        p = (1 + kv[1]) / 2
+        q = 1 - p
+        R = random.random()
+        if R < p:
+            kv[1] = 1
+        else:
+            kv[1] = -1
+
+        return kv
+
+    def perturb(self):
+        x = self.pad_sample()
+        e_eps = math.pow(2.71828, self.epsilon)
+        epsilon1 = math.log((self.l * (e_eps + 1) / 2) + 1)
+        epsilon2 = math.log(self.l * (e_eps - 1) + 1)
+        a = (self.l * (e_eps - 1) + 2) / (self.l * (e_eps - 1) + 2 * (self.d + self.l))
+        b = (1 - a) / (self.d + self.l - 1)
+        p = (self.l * (e_eps - 1) + 1) / (self.l * (e_eps - 1) + 2)
+
+        R = random.random()
+        if R < a:
+            R = random.random()
+            if R < p:
+                Z = [x[0], x[1]]
+            else:
+                Z = [x[0], -x[1]]
+        else:
+            numbers = list(range(1, self.d + self.l + 1))
+            # 移除k
+            numbers.remove(x[0])
+            # 随机选择一个数
+            random_number = random.choice(numbers)
+            R = random.random()
+            if R <= 0.5:
+                Z = [random_number, 1]
+            else:
+                Z = [random_number, -1]
+        return Z
+
+    def get_per_data(self):
+        return self.per_data
+
+
+class PCKVGRR_SERVER(object):
+    def __init__(self, eps, d, Gt):
+        self.Gt = Gt  # 扰动数据
+        self.epsilon = eps
+        self.d = d
+        self.l = 1
+        self.P = [0]  # 1-50有效
+        self.F = [0]  # 1-50有效
+        self.M = [0]
+        # 频率估计结果
+        self.es_data = []
+
+    def estimate(self):
+        e_eps = math.pow(2.71828, self.epsilon)
+        epsilon1 = math.log((self.l * (e_eps + 1) / 2) + 1)
+        epsilon2 = math.log(self.l * (e_eps - 1) + 1)
+        a = (self.l * (e_eps - 1) + 2) / (self.l * (e_eps - 1) + 2 * (self.d + self.l))
+        b = (1 - a) / (self.d + self.l - 1)
+        p = (self.l * (e_eps - 1) + 1) / (self.l * (e_eps - 1) + 2)
+
+        n = len(self.Gt)
+
+        for k in range(1, self.d + 1):
+            n1 = 0
+            n2 = 0
+            for Z in self.Gt:
+                if Z[0] == k:
+                    if Z[1] == 1:
+                        n1 = n1 + 1
+                    elif Z[1] == -1:
+                        n2 = n2 + 1
+            fk = (((n1 + n2) / n) - b) * self.l / (a - b)
+            if fk < (1 / n):
+                fk = 1 / n
+            elif fk > 1:
+                fk = 1
+            #  方法二
+            # 定义2×2的矩阵
+            matrix_1 = np.array([[a * p - b / 2, a * (1 - p) - b / 2], [a * (1 - p) - b / 2, a * p - b / 2]])
+            # 计算矩阵的逆
+            inverse_matrix_1 = np.linalg.inv(matrix_1)
+            matrix_2 = np.array([[n1 - n * b / 2], [n2 - n * b / 2]])
+            result = np.dot(inverse_matrix_1, matrix_2)
+            nn1 = result[0][0]
+            nn2 = result[1][0]
+            if nn1 < 0:
+                nn1 = 0
+            elif nn1 > (n * fk / self.l):
+                nn1 = n * fk / self.l
+            if nn2 < 0:
+                nn2 = 0
+            elif nn2 > (n * fk / self.l):
+                nn2 = n * fk / self.l
+            mk = (self.l * (nn1 - nn2)) / (n * fk)
+            # mk = (self.l*(n1-n2)) / (n*fk*a*(2*p-1))
+            self.P.append([fk, mk])
+            self.F.append(fk)
+            self.M.append(mk)
+            self.es_data = self.P
+
+    def get_T_F(self):
+        return self.F
+
+    def get_T_M(self):
+        return self.M
+
+
+class PCKVUE_USER(object):
+    def __init__(self, epsilon, d, S):
+        self.epsilon = epsilon
+        self.S = S
+        self.l = 1
+        self.d = d
+        # 扰动数据
+        self.per_data = []
+
+    def run(self):
+        perturbed_data = self.perturb()
+        self.per_data = perturbed_data
+
+    def pad_sample(self):
+        n = len(self.S) / max([len(self.S), self.l])
+        bernoulliDist = stats.bernoulli(n)
+        B = bernoulliDist.rvs(1)
+        if B == 1:
+            a = random.choice(self.S)
+            kv = copy.copy(a)
+        else:
+            num = list(range(self.d + 1, self.d + self.l + 1))
+            kv = [random.choice(num), 0]
+
+        p = (1 + kv[1]) / 2
+        q = 1 - p
+        R = random.random()
+        if R < p:
+            kv[1] = 1
+        else:
+            kv[1] = -1
+
+        return kv
+
+    def perturb(self):
+        x = self.pad_sample()
+        e_eps = math.pow(2.71828, self.epsilon)
+        epsilon1 = math.log((e_eps + 1) / 2)
+        epsilon2 = self.epsilon
+        a = 1 / 2
+        b = 1 / (math.exp(epsilon1) + 1)
+        p = math.exp(epsilon2) / (math.exp(epsilon2) + 1)
+
+        X = [[0, 0]]  # 从第1号元素开始，即第0号元素不考虑
+        for i in range(1, self.d + self.l + 1):
+            if i == x[0]:
+                X.append([1, x[1]])
+            else:
+                X.append([0, 0])
+
+        for i in range(1, self.d + self.l + 1):
+            if i == x[0]:
+                R = random.random()
+                if R < (1 - a):
+                    X[i] = [0, 0]
+                else:
+                    R = random.random()
+                    if R < (1 - p):
+                        X[i][1] = -X[i][1]
+            else:
+                R = random.random()
+                if R < (1 - b):
+                    X[i] = [0, 0]
+                else:
+                    X[i] = [1, 0]
+                    R = random.random()
+                    if R < 0.5:
+                        X[i][1] = 1
+                    else:
+                        X[i][1] = -1
+        return X
+
+    def get_per_data(self):
+        return self.per_data
+
+
+class PCKVUE_SERVER(object):
+    def __init__(self, eps, d, Gt):
+        self.Gt = Gt  # 扰动数据
+        self.epsilon = eps
+        self.d = d
+        self.l = 1
+        self.P = [0]  # 1-50有效
+        self.F = [0]  # 1-50有效
+        self.M = [0]
+        # 频率估计结果
+        self.es_data = []
+
+    def estimate(self):
+        e_eps = math.pow(2.71828, self.epsilon)
+        epsilon1 = math.log((e_eps + 1) / 2)
+        epsilon2 = self.epsilon
+        a = 1 / 2
+        b = 1 / (math.exp(epsilon1) + 1)
+        p = math.exp(epsilon2) / (math.exp(epsilon2) + 1)
+        n = len(self.Gt)
+
+        for k in range(1, self.d + 1):
+            n1 = 0
+            n2 = 0
+            for Z in self.Gt:
+                if Z[k][1] == 1:
+                    n1 = n1 + 1
+                elif Z[k][1] == -1:
+                    n2 = n2 + 1
+            fk = (((n1 + n2) / n) - b) * self.l / (a - b)
+            if fk < (1 / n):
+                fk = 1 / n
+            elif fk > 1:
+                fk = 1
+            #  方法二
+            # 定义2×2的矩阵
+            matrix_1 = np.array([[a * p - b / 2, a * (1 - p) - b / 2], [a * (1 - p) - b / 2, a * p - b / 2]])
+            # 计算矩阵的逆
+            inverse_matrix_1 = np.linalg.inv(matrix_1)
+            matrix_2 = np.array([[n1 - n * b / 2], [n2 - n * b / 2]])
+            result = np.dot(inverse_matrix_1, matrix_2)
+            nn1 = result[0][0]
+            nn2 = result[1][0]
+            if nn1 < 0:
+                nn1 = 0
+            elif nn1 > (n * fk / self.l):
+                nn1 = n * fk / self.l
+            if nn2 < 0:
+                nn2 = 0
+            elif nn2 > (n * fk / self.l):
+                nn2 = n * fk / self.l
+            mk = (self.l * (nn1 - nn2)) / (n * fk)
+            #  方法一：mk = (self.l*(n1-n2)) / (n*fk*a*(2*p-1))
+            self.P.append([fk, mk])
+            self.F.append(fk)
+            self.M.append(mk)
+            self.es_data = self.P
+
+    def get_T_F(self):
+        return self.F
+
+    def get_T_M(self):
+        return self.M
+
+
+# ------------------------下方为吴昊楠新加入代码，不一定正确
+# 松弛数据
+class IM_USER(object):
+    def __init__(self, epsilon: float, data: float):
+        super(IM_USER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 松弛因子
+        self.delta = 0.05
+        # 用户的原始数据
+        self.data = data
+        # 用户的扰动数据
+        self.per_data = -1
+
+        self.q = (math.exp(self.epsilon / 2) - 1 - 4 * self.delta) / (
+                2 * math.exp(self.epsilon / 2) * (math.exp(self.epsilon / 2) + 1 + 4 * self.delta))
+        self.p = math.exp(self.epsilon) * self.q + self.delta
+        self.a = 1 / (4 * self.q) - math.sqrt(self.p / (2 * self.q * (self.q - self.p)) + 1 / (16 * pow(self.q, 2)))
+        self.C = (1 - 2 * self.a * (self.q - self.p)) / (2 * self.p)
+        self.b = self.a - self.C
+
+    def run(self):
+        perturbed_data = self.perturb()
+        self.per_data = perturbed_data
+
+    def perturb(self):
+        p_sum = -2 * self.p * self.b
+        x = np.random.random_sample()
+        lef = self.a * self.data + self.b
+        rig = self.a * self.data - self.b
+        if x < p_sum:
+            temp = random.uniform(lef, rig)
+        else:
+            xx = np.random.random_sample()
+            temp_p_pm = (lef + self.C) / (self.C - rig + lef + self.C)
+            if xx < temp_p_pm:
+                temp1 = random.uniform(-self.C, lef)
+                while temp1 == lef:
+                    temp1 = random.uniform(-self.C, lef)
+                temp = temp1
+            else:
+                temp2 = random.uniform(rig, self.C)
+                while temp2 == rig:
+                    temp2 = random.uniform(rig, self.C)
+                temp = temp2
+        pm_y_perturb = temp
+        return pm_y_perturb
+
+    def get_per_data(self):
+        return self.per_data
+
+
+class IM_SERVER(object):
+    def __init__(self, per_datalist: list):
+        super(IM_SERVER, self).__init__()
+        # 所有用户的扰动数据
+        self.per_datalist = per_datalist
+        # 估计均值结果
+        self.es_mean = 0
+
+    def estimate(self):
+        # 均值估计的聚合方法很简单，直接将用户数据相加即可
+        for x in self.per_datalist:
+            self.es_mean += x
+        self.es_mean /= len(self.per_datalist)
+
+    def get_es_mean(self):
+        return self.es_mean
+
+
+class NM_USER(object):
+    def __init__(self, epsilon: float, data: float):
+        super(NM_USER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 松弛因子
+        self.delta = 0.05
+        # 用户的原始数据
+        self.data = data
+        # 用户的扰动数据
+        self.per_data = -1
+
+        ee = np.exp(self.epsilon)
+        self.w = (ee - 1 - self.epsilon * (ee + self.delta)) / (ee * (1 - ee) + self.epsilon * (ee + self.delta))  # 2b
+        self.p = (ee + self.delta) / (self.w * ee + 1)
+        self.q = (1 - self.w * self.delta) / (self.w * ee + 1)
+
+    def run(self):
+        perturbed_data = self.perturb()
+        self.per_data = perturbed_data
+
+    def perturb(self):
+        d = (self.data + 1) / 2
+        randoms = np.random.uniform(0, 1)
+        if randoms <= (self.q * d):
+            temp = randoms / self.q - self.w / 2
+        elif randoms > (self.q * d) and randoms <= (self.q * d + self.p * self.w):
+            temp = (randoms - self.q * d) / self.p + d - (self.w / 2)
+        elif randoms > (self.q * d + self.p * self.w):
+            temp = (randoms - self.q * d - self.p * self.w) / self.q + d + (self.w / 2)
+        perturb_data = temp
+        return perturb_data
+
+    def get_per_data(self):
+        return self.per_data
+
+
+
+class NM_SERVER(object):
+    def __init__(self, epsilon: float, per_datalist: list):
+        super(NM_SERVER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 松弛因子
+        self.delta = 0.05
+        # 所有用户的扰动数据
+        self.per_datalist = per_datalist
+        # 估计均值结果
+        self.es_mean = 0
+
+        ee = np.exp(self.epsilon)
+        self.w = (ee - 1 - self.epsilon * (ee + self.delta)) / (ee * (1 - ee) + self.epsilon * (ee + self.delta))  # 2b
+        self.p = (ee + self.delta) / (self.w * ee + 1)
+        self.q = (1 - self.w * self.delta) / (self.w * ee + 1)
+
+    def EMS(self, n, ns_hist, transform, max_iteration, loglikelihood_threshold):
+        # smoothing matrix
+        smoothing_factor = 2
+        binomial_tmp = [scipy.special.binom(smoothing_factor, k) for k in range(smoothing_factor + 1)]      # 计算二项式系数
+        smoothing_matrix = np.zeros((n, n))
+        central_idx = int(len(binomial_tmp) / 2)
+        for i in range(int(smoothing_factor / 2)):
+            smoothing_matrix[i, : central_idx + i + 1] = binomial_tmp[central_idx - i:]
+        for i in range(int(smoothing_factor / 2), n - int(smoothing_factor / 2)):
+            smoothing_matrix[i, i - central_idx: i + central_idx + 1] = binomial_tmp
+        for i in range(n - int(smoothing_factor / 2), n):
+            remain = n - i - 1
+            smoothing_matrix[i, i - central_idx + 1:] = binomial_tmp[: central_idx + remain]
+        # print(smoothing_matrix)
+        row_sum = np.sum(smoothing_matrix, axis=1)
+        smoothing_matrix = (smoothing_matrix.T / row_sum).T
+
+        # EMS
+        theta = np.ones(n) / float(n)
+        theta_old = np.zeros(n)
+        r = 0
+        sample_size = sum(ns_hist)
+        old_logliklihood = 0
+
+        while LA.norm(theta_old - theta, ord=1) > 1 / sample_size and r < max_iteration:
+            theta_old = np.copy(theta)
+            X_condition = np.matmul(transform, theta_old)
+
+            TMP = transform.T / X_condition
+
+            P = np.copy(np.matmul(TMP, ns_hist))
+            P = P * theta_old
+
+            theta = np.copy(P / sum(P))
+
+            # Smoothing step
+            theta = np.matmul(smoothing_matrix, theta)
+            # print(sum(theta))
+            theta = theta / sum(theta)
+
+            logliklihood = np.inner(ns_hist, np.log(np.matmul(transform, theta)))
+            imporve = logliklihood - old_logliklihood
+
+            if r > 1 and abs(imporve) < loglikelihood_threshold:
+                # print("stop when", imporve / old_logliklihood, loglikelihood_threshold)
+                break
+
+            old_logliklihood = logliklihood
+
+            r += 1
+        return theta
+
+
+    def estimate(self):
+        m = 1024
+        n = 1024
+        m_cell = (1 + self.w) / m
+        n_cell = 1 / n
+
+        transform = np.ones((m, n)) * self.q * m_cell
+        for i in range(n):
+            left_most_v = (i * n_cell)
+            right_most_v = ((i + 1) * n_cell)
+
+            ll_bound = int(left_most_v / m_cell)
+            lr_bound = int((left_most_v + self.w) / m_cell)
+            rl_bound = int(right_most_v / m_cell)
+            rr_bound = int((right_most_v + self.w) / m_cell)
+
+            ll_v = left_most_v - self.w / 2
+            rl_v = right_most_v - self.w / 2
+            l_p = ((ll_bound + 1) * m_cell - self.w / 2 - ll_v) * (self.p - self.q) + self.q * m_cell
+            r_p = ((rl_bound + 1) * m_cell - self.w / 2 - rl_v) * (self.p - self.q) + self.q * m_cell
+            if rl_bound > ll_bound:
+                transform[ll_bound, i] = (l_p - self.q * m_cell) * (
+                        (ll_bound + 1) * m_cell - self.w / 2 - ll_v) / n_cell * 0.5 + self.q * m_cell
+                transform[ll_bound + 1, i] = self.p * m_cell - (self.p * m_cell - r_p) * (
+                        rl_v - ((ll_bound + 1) * m_cell - self.w / 2)) / n_cell * 0.5
+            else:
+                transform[ll_bound, i] = (l_p + r_p) / 2
+                transform[ll_bound + 1, i] = self.p * m_cell
+
+            lr_v = left_most_v + self.w / 2
+            rr_v = right_most_v + self.w / 2
+            r_p = (rr_v - (rr_bound * m_cell - self.w / 2)) * (self.p - self.q) + self.q * m_cell
+            l_p = (lr_v - (lr_bound * m_cell - self.w / 2)) * (self.p - self.q) + self.q * m_cell
+            if rr_bound > lr_bound:
+                if rr_bound < m:
+                    transform[rr_bound, i] = (r_p - self.q * m_cell) * (
+                            rr_v - (rr_bound * m_cell - self.w / 2)) / n_cell * 0.5 + self.q * m_cell
+
+                transform[rr_bound - 1, i] = self.p * m_cell - (self.p * m_cell - l_p) * (
+                        (rr_bound * m_cell - self.w / 2) - lr_v) / n_cell * 0.5
+
+            else:
+                transform[rr_bound, i] = (l_p + r_p) / 2
+                transform[rr_bound - 1, i] = self.p * m_cell
+
+            if rr_bound - 1 > ll_bound + 2:
+                transform[ll_bound + 2: rr_bound - 1, i] = self.p * m_cell
+
+        max_iteration = 10000
+        loglikelihood_threshold = 1e-3
+        ns_hist, _ = np.histogram(self.per_datalist, bins=m, range=(-self.w / 2, 1 + self.w / 2))
+        data_noise = self.EMS( n, ns_hist, transform, max_iteration, loglikelihood_threshold) * len(
+            self.per_datalist)
+        sum_estimate = 0
+        for i in range(len(data_noise)):
+            sum_estimate += data_noise[i] * (-1 + i * 2 / n + 2 / (2 * n))
+        self.es_mean = sum_estimate / len(self.per_datalist)
+
+    def get_es_mean(self):
+        return self.es_mean
+
+
+class NDM_USER(object):
+    def __init__(self, epsilon: float, data: float):
+        super(NDM_USER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 松弛因子
+        self.delta = 0.05
+        # 用户的原始数据
+        self.data = data
+        # 用户的扰动数据
+        self.per_data = -1
+
+        self.ee = np.exp(self.epsilon)
+        self.s = (self.ee + 1) / (self.ee + 2 * self.delta - 1)
+
+    def run(self):
+        perturbed_data = self.perturb()
+        self.per_data = perturbed_data
+
+    def perturb(self):
+
+        p_temp = (self.ee + 2 * self.delta - 1) * self.data / (2 * (self.ee + 1)) + 0.5
+        sample_temp = np.random.random_sample()
+        if sample_temp < p_temp:
+            per_temp = self.s
+        else:
+            per_temp = -self.s
+        return per_temp
+
+    def get_per_data(self):
+        return self.per_data
+
+
+class NDM_SERVER(object):
+    def __init__(self, per_datalist: list):
+        super(NDM_SERVER, self).__init__()
+        # 所有用户的扰动数据
+        self.per_datalist = per_datalist
+        # 估计均值结果
+        self.es_mean = 0
+
+    def estimate(self):
+        # 均值估计的聚合方法很简单，直接将用户数据相加即可
+        for x in self.per_datalist:
+            self.es_mean += x
+        self.es_mean /= len(self.per_datalist)
+
+    def get_es_mean(self):
+        return self.es_mean
+
+
+class OptGM_USER(object):
+    def __init__(self, epsilon: float, data: float):
+        super(OptGM_USER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 松弛因子
+        self.delta = 0.05
+        # 用户的原始数据
+        self.data = data
+        # 用户的扰动数据
+        self.per_data = -1
+        # 全局敏感度
+        self.GSen = 2
+
+    def run(self):
+        perturbed_data = self.perturb()
+        self.per_data = perturbed_data
+
+    def perturb(self):
+        def Phi(t):
+            return 0.5 * (1.0 + math.erf(float(t) / math.sqrt(2.0)))
+
+        def caseA(epsilon0, s):
+            return Phi(math.sqrt(epsilon0 * s)) - math.exp(epsilon0) * Phi(-math.sqrt(epsilon0 * (s + 2.0)))
+
+        def caseB(epsilon0, s):
+            return Phi(-math.sqrt(epsilon0 * s)) - math.exp(epsilon0) * Phi(-math.sqrt(epsilon0 * (s + 2.0)))
+
+        def doubling_trick(predicate_stop, s_inf0, s_sup0):
+            while not predicate_stop(s_sup0):
+                s_inf0 = s_sup0
+                s_sup0 = 2.0 * s_inf0
+            return s_inf0, s_sup0
+
+        def binary_search(predicate_stop, predicate_left, s_inf0, s_sup0):
+            s_mid = s_inf0 + (s_sup0 - s_inf0) / 2.0
+            while not predicate_stop(s_mid):
+                if predicate_left(s_mid):
+                    s_sup0 = s_mid
+                else:
+                    s_inf0 = s_mid
+                s_mid = s_inf0 + (s_sup0 - s_inf0) / 2.0
+            return s_mid
+
+        def EpsilonNot0(epsilon0, delta0):
+            delta_thr = caseA(epsilon0, 0.0)
+
+            if delta0 == delta_thr:
+                alpha = 1.0
+            else:
+                if delta0 > delta_thr:
+                    predicate_stop_DT = lambda s: caseA(epsilon0, s) >= delta0
+                    function_s_to_delta = lambda s: caseA(epsilon0, s)
+                    predicate_left_BS = lambda s: function_s_to_delta(s) > delta0
+                    function_s_to_alpha = lambda s: math.sqrt(1.0 + s / 2.0) - math.sqrt(s / 2.0)
+
+                else:
+                    predicate_stop_DT = lambda s: caseB(epsilon0, s) <= delta0
+                    function_s_to_delta = lambda s: caseB(epsilon0, s)
+                    predicate_left_BS = lambda s: function_s_to_delta(s) < delta0
+                    function_s_to_alpha = lambda s: math.sqrt(1.0 + s / 2.0) + math.sqrt(s / 2.0)
+
+                predicate_stop_BS = lambda s: abs(function_s_to_delta(s) - delta0) <= 1.e-12
+
+                s_inf, s_sup = doubling_trick(predicate_stop_DT, 0.0, 1.0)
+                s_final = binary_search(predicate_stop_BS, predicate_left_BS, s_inf, s_sup)
+                alpha = function_s_to_alpha(s_final)
+            sigma0 = alpha * self.GSen / math.sqrt(2.0 * epsilon0)
+            return sigma0
+
+        if self.epsilon == 0:
+            sigma = self.GSen / self.delta / 2.0
+        else:
+            sigma = EpsilonNot0(self.epsilon, self.delta)
+
+        opt_gm_y = self.data + random.gauss(0, sigma)
+        return opt_gm_y
+
+    def get_per_data(self):
+        return self.per_data
+
+
+class OptGM_SERVER(object):
+    def __init__(self, per_datalist: list):
+        super(OptGM_SERVER, self).__init__()
+        # 所有用户的扰动数据
+        self.per_datalist = per_datalist
+        # 估计均值结果
+        self.es_mean = 0
+
+    def estimate(self):
+        # 均值估计的聚合方法很简单，直接将用户数据相加即可
+        for x in self.per_datalist:
+            self.es_mean += x
+        self.es_mean /= len(self.per_datalist)
+
+    def get_es_mean(self):
+        return self.es_mean
+
+
+# 敏感度差异机制
+class uRAP_USER(object):
+    def __init__(self, epsilon: float, domain: list, xs: list, xn: list, data: int):
+        super(uRAP_USER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 定义域
+        self.domain = domain
+        # 定义域的长度
+        self.d = len(domain)
+        # 敏感数据定义域
+        self.xs = xs
+        # 敏感数据定义域长度
+        self.s = len(xs)
+        # 非敏感数据定义域
+        self.xn = xn
+        # 用户的原始数据
+        self.data = data
+        # 扰动数据
+        self.per_data = -1
+
+        e_2 = math.exp(self.epsilon / 2)
+        self.p = e_2 / (e_2 + 1)
+        self.q = 1 / (e_2 + 1)
+        self.z = (e_2 - 1) / e_2
+
+    def run(self):
+        # 编码和扰动过程
+        encode_x = self.encode(self.data)
+        perturb_x = self.perturb(encode_x)
+        self.per_data = perturb_x
+
+    def encode(self, x: int) -> list:
+        rs = [0 for _ in range(self.d)]
+        x_pos = self.domain.index(x)
+        rs[x_pos] = 1
+        return rs
+
+    def perturb(self, x: list) -> list:
+        for i in range(self.d):
+            # 敏感部分
+            if self.domain[i] in self.xs:
+                if x[i] == 1:
+                    if np.random.uniform() > self.p:
+                        x[i] = 0
+                elif x[i] == 0:
+                    if np.random.uniform() < self.q:
+                        x[i] = 1
+            # 非敏感部分
+            else:
+                if x[i] == 1:
+                    if np.random.uniform() > self.z:
+                        x[i] = 0
+        return x
+
+    def get_per_data(self):
+        return self.per_data
+
+
+class uRAP_SERVER(object):
+    def __init__(self, epsilon: float, domain: list, xs: list, xn: list, per_datalist: list):
+        super(uRAP_SERVER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 定义域。
+        self.domain = domain
+        # 敏感数据定义域
+        self.xs = xs
+        # 敏感数据定义域长度
+        self.s = len(xs)
+        # 非敏感数据定义域
+        self.xn = xn
+        # 所有用户的扰动数据
+        self.per_datalist = per_datalist
+        # 总用户数量
+        self.n = len(per_datalist)
+        # 估计出的频率
+        self.es_data = []
+
+        e_2 = math.exp(self.epsilon / 2)
+        self.p = e_2 / (e_2 + 1)
+        self.q = 1 / (e_2 + 1)
+        self.z = (e_2 - 1) / e_2
+
+    def estimate(self):
+        array = np.sum(self.per_datalist, axis=0)
+        count_dict = dict(zip(self.domain, array))
+
+        for x in self.domain:
+            if x in self.xs:
+                count = count_dict.get(x, 0)
+                rs = (count - self.n * self.q) / (self.n * (self.p - self.q))
+                self.es_data.append(rs)
+            else:
+                count = count_dict.get(x, 0)
+                rs = count / (self.n * self.z)
+                self.es_data.append(rs)
+
+    def get_es_data(self):
+        return self.es_data
+
+
+class uRR_USER(object):
+    def __init__(self, epsilon: float, domain: list, xs: list, xn: list, data: int):
+        super(uRR_USER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 定义域
+        # 这里记录定义域的原因在于，xs不一定是定义域的前半部分，可能在定义域中xs和xn是相互交叉的
+        self.domain = domain
+        # 敏感数据定义域
+        self.xs = xs
+        # 敏感数据定义域长度
+        self.s = len(xs)
+        # 非敏感数据定义域
+        self.xn = xn
+        # 用户的原始数据
+        self.data = data
+        # 扰动数据
+        self.per_data = -1
+
+        e_eps = math.exp(self.epsilon)
+        self.p_star = e_eps / (e_eps + self.s - 1)
+        self.q_star = 1 / (e_eps + self.s - 1)
+        self.z_star = (e_eps - 1) / (e_eps + self.s - 1)
+
+    def run(self):
+        # 编码和扰动过程
+        encode_data = self.encode(self.data)
+        perturbed_data = self.perturb(encode_data)
+        self.per_data = perturbed_data
+
+    def encode(self, x: int) -> int:
+        return x
+
+    def perturb(self, x: int) -> int:
+        if x in self.xs:
+            if np.random.uniform() < self.p_star:
+                return x
+            else:
+                per_x = choice(self.xs)
+                while per_x == x:
+                    per_x = choice(self.xs)
+                return per_x
+        else:
+            if np.random.uniform() < self.z_star:
+                return x
+            else:
+                per_x = choice(self.xs)
+                return per_x
+
+    def get_per_data(self):
+        return self.per_data
+
+
+class uRR_SERVER(object):
+    def __init__(self, epsilon: float, domain: list, xs: list, xn: list, per_datalist: list):
+        super(uRR_SERVER, self).__init__()
+        # 隐私预算
+        self.epsilon = epsilon
+        # 定义域。
+        # 这里记录定义域的原因在于，xs不一定是定义域的前半部分，可能在定义域中xs和xn是相互交叉的
+        self.domain = domain
+        # 敏感数据定义域
+        self.xs = xs
+        # 敏感数据定义域长度
+        self.s = len(xs)
+        # 非敏感数据定义域
+        self.xn = xn
+        # 所有用户的扰动数据
+        self.per_datalist = per_datalist
+        # 总用户数量
+        self.n = len(per_datalist)
+        # 估计出的频率
+        self.es_data = []
+
+        e_eps = math.exp(self.epsilon)
+        self.p_star = e_eps / (e_eps + self.s - 1)
+        self.q_star = 1 / (e_eps + self.s - 1)
+        self.z_star = (e_eps - 1) / (e_eps + self.s - 1)
+
+    def estimate(self):
+        per_data = self.per_datalist
+        count = Counter(per_data)
+        count_dict = dict(count)
+
+        for x in self.domain:
+            if x in self.xs:
+                count = count_dict.get(x, 0)
+                frequency = (count - self.n * self.q_star) / (self.n * (self.p_star - self.q_star))
+                self.es_data.append(frequency)
+            elif x in self.xn:
+                count = count_dict.get(x, 0)
+                frequency = count / (self.n * self.z_star)
+                self.es_data.append(frequency)
+
+    def get_es_data(self):
+        return self.es_data
+
+# data = Data("./dataset/set_test.txt",'set')
+#
+# temp_list = []
+# # 用户端
+# for x in data.data:
+#     user = PrivSet_USER(1,data.domain,x)
+#     user.run()
+#     temp_list.append(user.get_per_data())
+#
+# server = PrivSet_SERVER(5,data.domain,temp_list,data.set_size)
+# server.estimate()
+# # PL的真实频率位置很奇怪，不在Data类里，在server里
+# pass
+
+
+# n = 1024
+# result = sum((-1 + i * 2 / n + 2 / (2 * n)) for i in range(0, 1024))
+# print(result)

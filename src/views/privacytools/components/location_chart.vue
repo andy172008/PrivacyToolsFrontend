@@ -14,7 +14,7 @@ import * as echarts from 'echarts';
 // 导入 ECharts 库
 
 export default {
-  name: 'ComparisonCharts',
+  name: 'location_charts',
   // 组件的名称，方便在其他地方引用
   props: {
     chartData: {
@@ -39,52 +39,38 @@ export default {
           left: '10%',
           right: '10%',
         },
+        // 图表的标题和位置
         title: {
-          text: this.chartData.title,
+          text: "真实频率与估计频率比较",
           left: 'center'
         },
-        // 图表的标题和位置
+        // 提示框，显示详细数据
         tooltip: {
           trigger: 'axis'
         },
-        // 提示框，显示详细数据
+        // 图例
         legend: {
-          data: ['真实频率', this.chartData.mechanismName1, this.chartData.mechanismName2],
+          data: this.chartData.series_frequency.map(item => item.name),
           top: '10%'
         },
-        // 图例，显示各数据集的标识
+        // X 轴
         xAxis: {
           type: 'category',
-          data: this.chartData.label1,
+          data: this.chartData.label_frequency,
           axisTick: {
             show: false
           }
         },
-        // X 轴，类别类型，数据来源于 props.label1
+        
         yAxis: {
           type: 'value'
         },
         // Y 轴，数值类型
-        series: [
-          {
-            name: '真实频率',
-            type: 'bar',
-            data: this.chartData.realFrequency
-          },
-          // 真实频率的数据柱状图
-          {
-            name: this.chartData.mechanismName1,
-            type: 'bar',
-            data: this.chartData.estimatedFrequency1
-          },
-          // 估计频率 1 的数据柱状图
-          ...(this.chartData.estimatedFrequency2.length > 0 ? [{
-            name: this.chartData.mechanismName2,
-            type: 'bar',
-            data: this.chartData.estimatedFrequency2,
-          }] : [])
-          // 估计频率 2 的数据柱状图
-        ]
+        series: this.chartData.series_frequency.map(item => ({
+          name: item.name, // 动态名称
+          type: 'bar', // 柱状图类型
+          data: item.data, // 动态数据
+        })),
       };
       this.barChart.setOption(barOption, true);
       // 设置柱状图的配置项
@@ -97,54 +83,43 @@ export default {
           left: '10%',
           right: '10%',
         },
+        // 图表的标题和位置
         title: {
-          text: 'MSE 比较',
+          text: '均方误差',
           left: 'center'
         },
-        // 图表的标题和位置
+        // 提示框，显示详细数据
         tooltip: {
           trigger: 'axis'
         },
-        // 提示框，显示详细数据
+        // 图例
         legend: {
-          data: [this.chartData.mechanismName1, this.chartData.mechanismName2],
+          data: this.chartData.series_mse.map(item => item.name),
           top: '10%'
         },
-        // 图例，显示各数据集的标识
+        // X 轴
         xAxis: {
           type: 'category',
-          data: this.chartData.label2,
+          data: this.chartData.label_mse,
           axisTick: {
             show: false
           }
         },
-        // X 轴，类别类型，数据来源于 props.label2
+        // Y 轴，数值类型
         yAxis: {
           type: 'log', // 将 Y 轴改为对数坐标轴
         },
-        // Y 轴，数值类型
-        series: [
-          {
-            name: this.chartData.mechanismName1,
-            type: 'line',
-            data: this.chartData.mse1
-          },
-          // MSE 1 的数据折线图
-          ...(this.chartData.mse2.length > 0 ? [{
-            name: this.chartData.mechanismName2,
-            type: 'line',
-            data: this.chartData.mse2,
-          }] : [])
-          // MSE 2 的数据折线图
-        ]
+        series: this.chartData.series_mse.map(item => ({
+          name: item.name, // 动态名称
+          type: 'line', // 柱状图类型
+          data: item.data, // 动态数据
+        })),
       };
       this.lineChart.setOption(lineOption, true);
       // 设置折线图的配置项
     },
     updateChart() {
-      console.log('子组件中更新图表')
       // 更新图表的逻辑，比如重新调用绘图函数
-      this.barChart.clear();
       this.renderBarChart();
       // 渲染柱状图
       this.renderLineChart();
